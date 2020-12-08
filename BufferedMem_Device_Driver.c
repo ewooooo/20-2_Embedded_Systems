@@ -10,8 +10,8 @@
 #define DEV_NAME "BufferedMem"
 
 /* init 할때 arg로 버퍼 크기 및 read 크기 설정 */
-static int buffer_size = 32;        //N 버퍼 사이즈 2의 배수
-static int read_buffer_size = 3;    //M 바이트 단위
+static int buffer_size = 32;        //default N 버퍼 사이즈
+static int read_buffer_size = 3;    //default M 바이트 단위
 module_param(buffer_size, int, 0000);   
 MODULE_PARM_DESC(buffer_size, "buffer size (int) (kfifo) default 32");
 module_param(read_buffer_size, int, 0000);
@@ -26,10 +26,15 @@ struct kfifo fifo_buffer; // 내부 버퍼
 static ssize_t BufferedMem_write(struct file *file, const char *buf, size_t length, loff_t *ofs)
 {
     ssize_t retval; //write 상태 return 변수
+    char * write_buffer;
+    int i;
+    char onec;
+
     printk(KERN_INFO "BufferedMem_write\n");
-    
+
     /* user->kernel copy buffer */
-    char * write_buffer= kmalloc(length, GFP_KERNEL);   
+    write_buffer= kmalloc(length, GFP_KERNEL);   
+
     if (!write_buffer){
         printk("error: allocating memory for the buffer\n");
         retval = -ENOMEM;
@@ -44,8 +49,6 @@ static ssize_t BufferedMem_write(struct file *file, const char *buf, size_t leng
         goto out;   //실패 시 종료
     }
 
-    int i;
-    char onec;
     for(i = 0; i<length;i++){
         // 버퍼 다 차면 앞에꺼 뺌.
         if(kfifo_is_full(&fifo_buffer)){
@@ -70,17 +73,19 @@ out:
 
 static ssize_t BufferedMem_read(struct file *file, char *buf, size_t length, loff_t *ofs)
 {
-     
-    printk(KERN_INFO "BufferedMem_read!\n");
     ssize_t retval;
     char val;
+    char* read_buffer;
+    int i;
+
+    printk(KERN_INFO "BufferedMem_read!\n");
     if(*ofs > 0){
         retval = 0;
         goto out;
     }
 
     /* kernel->user 로 보내기 위한 buffer */
-    char* read_buffer= kmalloc(read_buffer_size, GFP_KERNEL);
+    read_buffer= kmalloc(read_buffer_size, GFP_KERNEL);
     printk(KERN_INFO "kmalloc read_buffer\n");
     if (!read_buffer){
         printk("error: allocating memory for the buffer\n");
@@ -97,7 +102,7 @@ static ssize_t BufferedMem_read(struct file *file, char *buf, size_t length, lof
     }
 
     /* 내부버퍼에서 read_buffer_size 만큼 빼서 저장 */
-    int i;
+    
     for(i=0;i<read_buffer_size;i++){
         if(kfifo_is_empty(&fifo_buffer)){
             break;
@@ -112,8 +117,7 @@ static ssize_t BufferedMem_read(struct file *file, char *buf, size_t length, lof
 
     /* kernel->user copy */
     retval = read_buffer_size;
-    if (copy_to_user(buf, read_buffer, read_buffer_size))
-    {
+    if (copy_to_user(buf, read_buffer, read_buffer_size)){
         retval = -EFAULT;
         goto out;
     }
@@ -131,6 +135,9 @@ out:
 static long BufferedMem_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
     int new_buf_size;   //입력된 새로운 size
+    char onec;
+    struct kfifo tmp_fifo_buffer;   //내부 버퍼 크기 수정 시 데이터 이동을 위해 임시 버퍼 할당
+
     switch (cmd){
         /* 내부 버퍼 크기 수정 */
         case CH_WRITE_BUFFER_SIZE:  
@@ -140,9 +147,8 @@ static long BufferedMem_ioctl(struct file *file, unsigned int cmd, unsigned long
                 printk(KERN_INFO "error\n");
                 return -EFAULT;
             }
-            char onec;
-
-            struct kfifo tmp_fifo_buffer;   //데이터 이동을 위해 임시 버퍼 할당
+            
+            
             if (kfifo_alloc(&tmp_fifo_buffer, buffer_size, GFP_KERNEL)){
                 printk(KERN_ERR "error kfifo_alloc\n");
             }
@@ -164,12 +170,21 @@ static long BufferedMem_ioctl(struct file *file, unsigned int cmd, unsigned long
                 kfifo_out(&tmp_fifo_buffer, &onec, sizeof(onec));
                 kfifo_in(&fifo_buffer,&onec,sizeof(onec));
             }
-
-            printk(KERN_INFO "success modify buffer size\n");
-
+            
             kfifo_free(&tmp_fifo_buffer);   //임시버퍼 반납
             printk(KERN_INFO "free tmp_fifo_buffer\n"); 
-        
+
+            new_buf_size = kfifo_size(&fifo_buffer);    //실제 변경된 버퍼 크기 유저에게 제공
+            printk(KERN_INFO "success modify buffer, input_size : %d \n", buffer_size);
+            printk(KERN_INFO "kfifo size: %d, kfifo len : %d, kfifoavail : %d\n", 
+                kfifo_size(&fifo_buffer),kfifo_len(&fifo_buffer), kfifo_avail(&fifo_buffer));
+            
+            /* kernel->user copy*/
+            if (copy_to_user((void __user *)arg, &new_buf_size, sizeof(new_buf_size))){
+                printk(KERN_INFO "error\n");
+                return -EFAULT;
+            }
+            
             break;
 
         /* Read 버퍼 크기 수정 */
@@ -182,12 +197,13 @@ static long BufferedMem_ioctl(struct file *file, unsigned int cmd, unsigned long
             }
             /* Read buffer size modfiy */
             read_buffer_size = new_buf_size;
-            printk(KERN_INFO "success modify read buffer size\n");
+            printk(KERN_INFO "success modify read buffer size : %d \n",read_buffer_size);
             break;
 
         default:
-            break;
+            return -1;
     }
+    return 0;
 }
 
 static int BufferedMem_open(struct inode *inode, struct file *file)
@@ -214,13 +230,13 @@ static struct file_operations BufferedMem_fops = {
 static int BufferedMem_init(void)
 {
     printk(KERN_INFO "BufferedMem_init\n");
-
+    
     /* 내부 버퍼 할당 */
     if (kfifo_alloc(&fifo_buffer, buffer_size, GFP_KERNEL)){
         printk(KERN_ERR "error kfifo_alloc\n");
     }
-    printk(KERN_INFO "kfifo fifo_buffer\n");
- 
+    printk(KERN_INFO "kfifo fifo_buffer, size : %d\n",kfifo_size(&fifo_buffer));
+    
     /* 디바이스 드라이버 등록 */
     register_chrdev(DEV_MAJOR_NUMBER, DEV_NAME, &BufferedMem_fops);
     printk(KERN_INFO "Device driver registered\n");

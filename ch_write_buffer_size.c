@@ -22,7 +22,8 @@ int main(int argc, char* argv[])
     }
     int buf_size = atoi(argv[1]);
     ioctl(dev, CH_WRITE_BUFFER_SIZE, &buf_size);
-    printf("success modify Read buffer size = %d\n",buf_size);
+    printf("success modify Write buffer\n");
+    printf("input_size : %d -> set_size : %d\n",atoi(argv[1]),buf_size);
     close(dev);
     return 0;
 }
