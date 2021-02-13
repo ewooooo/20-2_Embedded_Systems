@@ -40,7 +40,7 @@
 -	디바이스 파일 생성 
 
 ---
-# documate
+# Document
 
 ## ①	모듈 적재, 제거
 ```
@@ -95,6 +95,159 @@ for(i = 0; i<length;i++){
 -	유저 데이터 복사한 버퍼에서 한 글자씩 내부 버퍼에 입력
 -	입력 크기가 버퍼 남은 공간보다 크면 먼저 들어온 데이터 제거 후 입력
 
+## ④	read()
+![2](README/2.png)
+```
+char* read_buffer= kmalloc(read_buffer_size, GFP_KERNEL);
+```
+-	커널 메모리에서 유저 메모리 복사를 위한 버퍼생성
+-	버퍼 생성 실패 시 오류 로그 출력 후 종료
+-	Read 종료 시 버퍼 반납
+```
+if(kfifo_is_empty(&fifo_buffer)){
+```
+-	내부 버퍼 비어 있으면 로그 출력 후 종료
+```
+for(i=0;i<read_buffer_size;i++){
+        if(kfifo_is_empty(&fifo_buffer)){
+            break;
+        }
+        kfifo_out(&fifo_buffer, &val, sizeof(val));
+```
+-	Read_buffer_size 만큼 버퍼 읽기
+-	더 이상 읽을 데이터 없으면 loop 종료
+```
+if (copy_to_user(buf, read_buffer, read_buffer_size)){
+```
+-	커널 메모리에서 유저 메모리로 복사
+
+## ⑤	ioctl()
+```
+#define CH_WRITE_BUFFER_SIZE _IOW(DEV_MAJOR_NUMBER,0,int)
+#define CH_READ_BUFFER_SIZE _IOW(DEV_MAJOR_NUMBER,1,int)
+```
+-	ioctl 기능 2개 제공
+-	0번 CH_WRITE_BUFFER_SIZE 내부 버퍼 크기 변경
+-	1번 CH_READ_BUFFER_SIZE READ 버퍼 크기 변경
+
+### 	ioctl - READ 버퍼 크기 변경(ch_read_buffer_size)
+![3](README/3.png)
+```
+if(copy_from_user(&new_buf_size,(void __user *)arg,sizeof(new_buf_size))){
+```
+-	ioctl 인자로 변경할 크기 입력 받음. (int)
+-	오류 시 로그 출력 후 종료
+```
+read_buffer_size = new_buf_size;
+```
+-	read_buffer_size 변수에 새로운 크기 입력
+-	read_buffer_size 변수를 기준으로 read 하므로, 이 변수만 바꿔주면 됨.
+
+### 	ioctl -내부 버퍼 크기 변경(ch_write_buffer_size)
+```
+if(copy_from_user(&new_buf_size,(void __user *)arg,sizeof(new_buf_size))){
+```
+-	Ioctl 인자로 변경할 크기 입력 받음.
+-	유저 메모리 커널 메모리로 복사
+```
+struct kfifo tmp_fifo_buffer; //데이터 이동을 위해 임시 버퍼 할당
+```
+-	임시 버퍼 생성, 오류 시 로그 출력 후 종료
+```
+while (!kfifo_is_empty(&fifo_buffer)){  //기존 버퍼 데이터 임시 저장
+kfifo_out(&fifo_buffer, &onec, sizeof(onec));
+       kfifo_in(&tmp_fifo_buffer,&onec,sizeof(onec));
+}
+```
+-	임시 버퍼에 현재 내부 버퍼 내용 복사
+```
+kfifo_free(&fifo_buffer);       //기존 버퍼 반납
+kfifo_alloc(&fifo_buffer, buffer_size, GFP_KERNEL);
+```
+-	기존 내부 버퍼 반납 후 새로운 크기에 버퍼 할당
+```
+while (!kfifo_is_empty(&tmp_fifo_buffer))
+if(kfifo_is_full(&fifo_buffer)){
+kfifo_out(&fifo_buffer, &onec, sizeof(onec));
+}
+               kfifo_out(&tmp_fifo_buffer, &onec, sizeof(onec));
+               kfifo_in(&fifo_buffer,&onec,sizeof(onec));
+        }
+}
+```
+-	새로운 내부 버퍼에 저장했던 데이터 복구
+-	새로운 버퍼 크기가 작아서 내용이 모두 복구되지 않을 경우 먼저 저장되었던 내용 지움
+
+```
+new_buf_size = kfifo_size(&fifo_buffer);  //실제 변경된 버퍼 크기 유저에게 제공
+printk(KERN_INFO "success modify buffer, input_size : %d \n", buffer_size);
+printk(KERN_INFO "kfifo size: %d, kfifo len : %d, kfifoavail : %d\n", 
+kfifo_size(&fifo_buffer),kfifo_len(&fifo_buffer), kfifo_avail(&fifo_buffer));
+            
+/* kernel->user copy*/
+if (copy_to_user((void __user *)arg, &new_buf_size, sizeof(new_buf_size))){
+printk(KERN_INFO "error\n");
+     return -EFAULT;
+}
+```
+-	Kfifo는 메모리 할당 시 2의 배수로 할당되므로 실제로 할당된 크기를 유저에게 제공필요
+-	변경된 kfifo 크기 유저 모드로 복사. 에러 시 로그 출력
+
+
+## ⑥	ch_read_buffer_size 프로그램
+```
+#define DEV_MAJOR_NUMBER 275
+#define CH_READ_BUFFER_SIZE _IOW(DEV_MAJOR_NUMBER,1,int)
+```
+-	ioctl 정의
+```
+int buf_size = atoi(argv[1]);
+```
+-	새로운 버퍼 크기는 argument로 입력 받아 int 자료형으로 변환
+```
+dev = open("/dev/BufferedMem", O_RDWR);
+```
+-	디바이스 파일을 이용하여 open
+```
+ioctl(dev, CH_READ_BUFFER_SIZE, &buf_size);
+```
+-	ioctl을 이용하여 호출 및 커널로 buf_size 전송
+```
+close(dev);
+```
+-	close()명령으로 release
+
+## ⑦	ch_write_buffer_size 프로그램
+```
+#define CH_READ_BUFFER_SIZE _IOW(DEV_MAJOR_NUMBER,1,int)
+```
+-	ioctl 정의를 제외하고 ch_read_buffer_size 프로그램과 동일
+```
+printf("success modify Write buffer\n");
+printf("input_size : %d -> set_size : %d\n",atoi(argv[1]),buf_size); 
+```
+-	입력된 버퍼 크기와 실제로 수정된 버퍼크기 커널에서 받아와 출력 
+
+---
+```
+sudo insmod BufferedMem.ko
+dmesg | tail -5
+sudo mknod /dev/BufferedMem c 275 1
+sudo chmod 666 /dev/BufferedMem
+```
+```
+cat /dev/BufferedMem
+
+cat > /dev/BufferedMem
+```
+
+```
+sudo insmod BufferedMem.ko buffer_size=10 read_buffer_size=5
+```
+```
+./ch_read_buffer_size 3
+./ch_write_buffer_size 25
+```
 
 ---
 ## 제작 후 특이 사항
