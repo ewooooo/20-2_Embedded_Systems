@@ -144,6 +144,7 @@ read_buffer_size = new_buf_size;
 -	read_buffer_size 변수를 기준으로 read 하므로, 이 변수만 바꿔주면 됨.
 
 ### 	ioctl -내부 버퍼 크기 변경(ch_write_buffer_size)
+![4](README/4.png)
 ```
 if(copy_from_user(&new_buf_size,(void __user *)arg,sizeof(new_buf_size))){
 ```
